@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cyber Command DSP Live Wallpaper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+    body, html {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #030608;
+    }
+    #binary-combat {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="binary-combat"></canvas>
+
+  <script>
+    const canvas = document.getElementById('binary-combat');
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
+    const gridCanvas = document.createElement('canvas');
+    const gridCtx = gridCanvas.getContext('2d', { alpha: false });
+    let gridCacheDirty = true;
+
+    const COS_LUT = new Float32Array(64);
+    const SIN_LUT = new Float32Array(64);
+    for (let i = 0; i < 64; i++) {
+      const angle = (i / 64) * Math.PI * 2 - Math.PI / 2;
+      COS_LUT[i] = Math.cos(angle);
+      SIN_LUT[i] = Math.sin(angle);
+    }
+
+    // REACTIVE CONFIGURATION & LIVELY IPC HOOK
+    const THEMES = {
+      1: { factionZeroColor: '#00a8ff', factionOneColor: '#0051ff', combatColor: '#00ffff', bgColor: '#02050a' },
+      2: { factionZeroColor: '#00ff41', factionOneColor: '#008f11', combatColor: '#d4ff00', bgColor: '#010802' },
+      3: { factionZeroColor: '#ff003c', factionOneColor: '#ff6600', combatColor: '#ffffff', bgColor: '#090103' },
+      4: { factionZeroColor: '#ffb000', factionOneColor: '#ff5500', combatColor: '#ffffaa', bgColor: '#080400' },
+      5: { factionZeroColor: '#94b0c2', factionOneColor: '#415a6b', combatColor: '#ff2a55', bgColor: '#040608' }
+    };
+
+    const CUSTOM_COLORS = {
+      factionZeroColor: '#00f3ff',
+      factionOneColor: '#00ff66',
+      combatColor: '#ff0055',
+      bgColor: '#030608'
+    };
+
+    const CONFIG = {
+      themePreset: 1,
+      hudTitle: 'SYS.CORE // OVERWATCH',
+      factionZeroColor: THEMES[1].factionZeroColor,
+      factionOneColor: THEMES[1].factionOneColor,
+      combatColor: THEMES[1].combatColor,
+      bgColor: THEMES[1].bgColor,
+      maxFighters: 110,
+      audioSensitivity: 1.0,
+      showHud: true,
+      idleSpawn: true,
+      enableLasers: true,
+      sleepMode: false
+    };
+
+    function hexToRgbString(hex) {
+      const clean = String(hex || '#00f3ff').replace('#', '');
+      const num = parseInt(clean, 16) || 0;
+      return `${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}`;
+    }
+
+    let primaryRgb = hexToRgbString(CONFIG.factionZeroColor);
+    let secondaryRgb = hexToRgbString(CONFIG.factionOneColor);
+    let combatRgb = hexToRgbString(CONFIG.combatColor);
+
+    const fighters = [];
+    const sparks = [];
+    const shockwaves = [];
+    const harmonicLasers = [];
+
+    function removeFast(arr, index) {
+      arr[index] = arr[arr.length - 1];
+      arr.pop();
+    }
+
+    function rebuildStaticGridCache() {
+      gridCanvas.width = canvas.width;
+      gridCanvas.height = canvas.height;
+      gridCtx.fillStyle = CONFIG.bgColor;
+      gridCtx.fillRect(0, 0, gridCanvas.width, gridCanvas.height);
+
+      gridCtx.strokeStyle = `rgba(${primaryRgb}, 0.045)`;
+      gridCtx.lineWidth = 1;
+      const step = 55;
+      gridCtx.beginPath();
+      for (let x = 0; x <= gridCanvas.width; x += step) {
+        gridCtx.moveTo(x, 0);
+        gridCtx.lineTo(x, gridCanvas.height);
+      }
+      for (let y = 0; y <= gridCanvas.height; y += step) {
+        gridCtx.moveTo(0, y);
+        gridCtx.lineTo(gridCanvas.width, y);
+      }
+      gridCtx.stroke();
+      gridCacheDirty = false;
+    }
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      gridCacheDirty = true;
+      if (CONFIG.sleepMode) renderSleepStandbyScreen();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    window.addEventListener('contextmenu', e => e.preventDefault());
+
+    function syncActivePalette() {
+      const activeSource = CONFIG.themePreset === 0 ? CUSTOM_COLORS : (THEMES[CONFIG.themePreset] || CUSTOM_COLORS);
+      CONFIG.factionZeroColor = activeSource.factionZeroColor;
+      CONFIG.factionOneColor = activeSource.factionOneColor;
+      CONFIG.combatColor = activeSource.combatColor;
+      CONFIG.bgColor = activeSource.bgColor;
+
+      primaryRgb = hexToRgbString(CONFIG.factionZeroColor);
+      secondaryRgb = hexToRgbString(CONFIG.factionOneColor);
+      combatRgb = hexToRgbString(CONFIG.combatColor);
+      gridCacheDirty = true;
+
+      for (let i = 0; i < fighters.length; i++) {
+        const f = fighters[i];
+        if (f.kills > 0) f.color = CONFIG.combatColor;
+        else f.color = f.faction === 1 ? CONFIG.factionOneColor : CONFIG.factionZeroColor;
+      }
+      if (CONFIG.sleepMode) renderSleepStandbyScreen();
+    }
+
+    function toBool(val) {
+      return val === true || val === 'true' || val === 1 || val === '1';
+    }
+
+    function livelyPropertyListener(name, val) {
+      if (name === 'themePreset') {
+        CONFIG.themePreset = Number(val);
+        syncActivePalette();
+        return;
+      }
+      if (name in CUSTOM_COLORS) {
+        CUSTOM_COLORS[name] = val;
+        if (CONFIG.themePreset === 0) syncActivePalette();
+        return;
+      }
+      if (name === 'showHud' || name === 'idleSpawn' || name === 'enableLasers') {
+        CONFIG[name] = toBool(val);
+        if (name === 'enableLasers' && !CONFIG.enableLasers) harmonicLasers.length = 0;
+        return;
+      }
+      if (name === 'sleepMode') {
+        setSleepMode(toBool(val));
+        return;
+      }
+      if (name in CONFIG) {
+        CONFIG[name] = isNaN(Number(val)) ? val : Number(val);
+        if (name === 'maxFighters') {
+          while (fighters.length > CONFIG.maxFighters) fighters.pop();
+        }
+      }
+    }
+
+    let mouse = { x: canvas.width / 2, y: canvas.height / 2, vx: 0, vy: 0 };
+    let prevMouse = { x: canvas.width / 2, y: canvas.height / 2 };
+    let lastMouseMove = Date.now();
+    let isSingularity = false;
+    let isTeslaConductor = false;
+
+    const RESONANCE_MODES = ['AUTO_SPECTRUM', 'SUB_BASS_CRUSHER', 'SYNTH_RAILGUN', 'CHRONO_FREEZE'];
+    let resonanceIndex = 0;
+
+    // SLEEP MODE & VSYNC RENDER CONTROLLER
+    let rafId = null;
+
+    function setSleepMode(enable) {
+      CONFIG.sleepMode = enable;
+      if (CONFIG.sleepMode) {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        isSingularity = false;
+        isTeslaConductor = false;
+        renderSleepStandbyScreen();
+      } else {
+        triggerHudToast('SYS.CORE // WAKING ENGINE');
+        telemetry.lastFrameStamp = performance.now();
+        if (!rafId) rafId = requestAnimationFrame(animate);
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+      } else if (!CONFIG.sleepMode && !rafId) {
+        telemetry.lastFrameStamp = performance.now();
+        rafId = requestAnimationFrame(animate);
+      }
+    });
+
+    function renderSleepStandbyScreen() {
+      if (gridCacheDirty) rebuildStaticGridCache();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(gridCanvas, 0, 0);
+
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+
+      ctx.save();
+      ctx.strokeStyle = `rgba(${primaryRgb}, 0.25)`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([8, 12]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, 110, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 11px "Courier New", monospace';
+      ctx.fillStyle = `rgba(${primaryRgb}, 0.6)`;
+      ctx.fillText('SYS.CORE // LOW-POWER STANDBY', cx, cy - 22);
+
+      ctx.font = 'bold 20px "Courier New", monospace';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('SLEEP MODE ACTIVE', cx, cy + 4);
+
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = CONFIG.factionOneColor;
+      ctx.fillText('0.0% CPU LOCK | PRESS [S] TO WAKE', cx, cy + 28);
+      ctx.restore();
+    }
+
+    // TELEMETRY & HARDWARE METRICS ENGINE
+    const telemetry = {
+      fps: 60,
+      frameTime: 16.6,
+      dtScalar: 1.0,
+      lastFrameStamp: performance.now(),
+      batteryLevel: '100%',
+      batteryCharging: true,
+      cpuLoad: 0,
+      ramUsage: 0,
+      hasNativeSysInfo: false,
+      totalKills: 0,
+      hexPromotions: 0,
+      packetsRx: 1024
+    };
+
+    if (navigator.getBattery) {
+      navigator.getBattery().then(bat => {
+        const updateBat = () => {
+          telemetry.batteryLevel = `${Math.round(bat.level * 100)}%`;
+          telemetry.batteryCharging = bat.charging;
+        };
+        updateBat();
+        bat.addEventListener('levelchange', updateBat);
+        bat.addEventListener('chargingchange', updateBat);
+      });
+    }
+
+    function livelySystemInformation(data) {
+      try {
+        const sys = JSON.parse(data);
+        telemetry.hasNativeSysInfo = true;
+        telemetry.cpuLoad = Math.round(sys.CurrentCpu || 0);
+        telemetry.ramUsage = Math.round(((sys.TotalRam - sys.CurrentRamAvail) / sys.TotalRam) * 100);
+      } catch (e) {}
+    }
+
+    function updateTelemetry(now) {
+      const delta = Math.max(1, now - telemetry.lastFrameStamp);
+      telemetry.lastFrameStamp = now;
+      telemetry.frameTime = telemetry.frameTime * 0.9 + delta * 0.1;
+      telemetry.fps = Math.min(360, Math.round(1000 / telemetry.frameTime));
+      telemetry.dtScalar = Math.min(2.0, delta / 16.667);
+
+      if (!telemetry.hasNativeSysInfo && (frameCount & 15) === 0) {
+        const entityLoad = ((fighters.length * 1.1 + sparks.length * 0.4) / 200) * 30;
+        const audioLoad = (audioState.bass * 15 + audioState.treble * 10);
+        telemetry.cpuLoad = Math.min(99, Math.round(4 + entityLoad + audioLoad));
+        telemetry.ramUsage = performance.memory
+          ? Math.round((performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit) * 100)
+          : 38;
+      }
+      telemetry.packetsRx += Math.round(fighters.length * 0.8 + audioState.mid * 120);
+    }
+
+    // ZERO-ALLOCATION DSP AUDIO ENGINE
+    const ENERGY_BUF_SIZE = 60;
+    const audioState = {
+      bins: new Float32Array(64),
+      bass: 0,
+      mid: 0,
+      treble: 0,
+      prevBass: 0,
+      beatCooldown: 0,
+      energyRing: new Float32Array(ENERGY_BUF_SIZE),
+      energyIndex: 0,
+      energySum: 0,
+      avgEnergy: 0,
+      timeScale: 1.0,
+      buildUpCharge: 0,
+      screenShake: 0,
+      bpmEstimate: 128,
+      lastBeatTime: performance.now(),
+      webAnalyser: null,
+      webDataArray: null
+    };
+
+    function livelyAudioListener(audioArray) {
+      if (CONFIG.sleepMode) return;
+      const gain = CONFIG.audioSensitivity;
+      for (let i = 0; i < 64; i++) {
+        const val = Math.min(1, ((audioArray[i] || 0) / 255) * gain);
+        audioState.bins[i] = audioState.bins[i] * 0.55 + val * 0.45;
+      }
+    }
+
+    if (window.wallpaperRegisterAudioListener) {
+      window.wallpaperRegisterAudioListener((audioArray) => {
+        if (CONFIG.sleepMode) return;
+        const gain = CONFIG.audioSensitivity;
+        for (let i = 0; i < 64; i++) {
+          const val = Math.min(1, (audioArray[i] || 0) * gain);
+          audioState.bins[i] = audioState.bins[i] * 0.55 + val * 0.45;
+        }
+      });
+    }
+
+    window.addEventListener('dblclick', async () => {
+      if (audioState.webAnalyser || CONFIG.sleepMode) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 128;
+        analyser.smoothingTimeConstant = 0.7;
+        source.connect(analyser);
+        audioState.webAnalyser = analyser;
+        audioState.webDataArray = new Uint8Array(analyser.frequencyBinCount);
+        triggerHudToast('WEB AUDIO FFT ONLINE');
+      } catch (err) {
+        console.warn('Web Audio fallback blocked:', err);
+      }
+    });
+
+    function processAudioFrame(now) {
+      const gain = CONFIG.audioSensitivity;
+      if (audioState.webAnalyser) {
+        audioState.webAnalyser.getByteFrequencyData(audioState.webDataArray);
+        for (let i = 0; i < 64; i++) {
+          audioState.bins[i] = Math.min(1, (audioState.webDataArray[i] / 255) * gain);
+        }
+      } else {
+        for (let i = 0; i < 64; i++) audioState.bins[i] *= 0.92;
+      }
+
+      let bassSum = 0, midSum = 0, trebleSum = 0;
+      for (let i = 0; i < 6; i++) bassSum += audioState.bins[i];
+      for (let i = 6; i < 26; i++) midSum += audioState.bins[i];
+      for (let i = 26; i < 64; i++) trebleSum += audioState.bins[i];
+
+      audioState.bass = bassSum / 6;
+      audioState.mid = midSum / 20;
+      audioState.treble = trebleSum / 38;
+
+      const currentEnergy = audioState.bass * 0.5 + audioState.mid * 0.3 + audioState.treble * 0.2;
+      audioState.energySum -= audioState.energyRing[audioState.energyIndex];
+      audioState.energyRing[audioState.energyIndex] = currentEnergy;
+      audioState.energySum += currentEnergy;
+      audioState.energyIndex = (audioState.energyIndex + 1) % ENERGY_BUF_SIZE;
+      audioState.avgEnergy = audioState.energySum / ENERGY_BUF_SIZE;
+
+      const mode = RESONANCE_MODES[resonanceIndex];
+
+      if (mode === 'CHRONO_FREEZE') {
+        audioState.timeScale = 0.18;
+      } else if (audioState.mid > 0.25 && audioState.bass < 0.18 && audioState.avgEnergy > 0.15) {
+        audioState.buildUpCharge = Math.min(1.0, audioState.buildUpCharge + 0.025);
+        audioState.timeScale = Math.max(0.2, 1.0 - audioState.buildUpCharge * 0.75);
+      } else {
+        audioState.timeScale += (1.0 - audioState.timeScale) * 0.15;
+      }
+
+      if (audioState.beatCooldown > 0) audioState.beatCooldown--;
+      if (audioState.screenShake > 0) audioState.screenShake *= 0.85;
+
+      const bassDelta = audioState.bass - audioState.prevBass;
+      const threshold = mode === 'SUB_BASS_CRUSHER' ? 0.30 : 0.40;
+
+      if (audioState.bass > threshold && bassDelta > 0.11 && audioState.beatCooldown === 0) {
+        const interval = now - audioState.lastBeatTime;
+        if (interval > 220 && interval < 1500) {
+          const instantBpm = Math.round(60000 / interval);
+          audioState.bpmEstimate = Math.round(audioState.bpmEstimate * 0.8 + instantBpm * 0.2);
+        }
+        audioState.lastBeatTime = now;
+
+        const dropMultiplier = 1 + audioState.buildUpCharge * 1.8;
+        triggerBassDetonation(audioState.bass * dropMultiplier);
+        audioState.buildUpCharge = 0;
+        audioState.timeScale = 1.35;
+        audioState.beatCooldown = 11;
+      }
+      audioState.prevBass = audioState.bass;
+    }
+
+    function triggerBassDetonation(intensity) {
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      audioState.screenShake = Math.min(18, intensity * 14);
+      shockwaves.push(new Shockwave(cx, cy, 240 + intensity * 280, CONFIG.combatColor));
+
+      if (fighters.length < CONFIG.maxFighters) {
+        const angle = Math.random() * Math.PI * 2;
+        const r = 135;
+        const cosA = Math.cos(angle);
+        const sinA = Math.sin(angle);
+        fighters.push(new CyberFighter(cx + cosA * r, cy + sinA * r, cosA * 6, sinA * 6, 0));
+        fighters.push(new CyberFighter(cx - cosA * r, cy - sinA * r, -cosA * 6, -sinA * 6, 1));
+      }
+
+      for (let i = 0; i < fighters.length; i++) {
+        const f = fighters[i];
+        const dx = f.x - cx;
+        const dy = f.y - cy;
+        const dist = Math.hypot(dx, dy) || 1;
+        const push = intensity * 5.2;
+        f.vx += (dx / dist) * push;
+        f.vy += (dy / dist) * push;
+      }
+    }
+
+    // OPTIMIZED WARP GRID & HUD PIPELINE
+    function getWarpedGridPointFast(gx, gy, cx, cy, phase, mouseRadius, mouseRadiusSq, mousePullScale) {
+      let wx = gx;
+      let wy = gy;
+
+      if (audioState.bass > 0.04) {
+        const dxCore = gx - cx;
+        const dyCore = gy - cy;
+        const distCoreSq = dxCore * dxCore + dyCore * dyCore;
+        if (distCoreSq < 176400 && distCoreSq > 1) {
+          const distCore = Math.sqrt(distCoreSq);
+          const bassRipple = Math.sin(distCore * 0.04 - phase) * (audioState.bass * 22);
+          const factor = (1 - distCore / 420);
+          wx += (dxCore / distCore) * bassRipple * factor;
+          wy += (dyCore / distCore) * bassRipple * factor;
+        }
+      }
+
+      const dxMouse = gx - mouse.x;
+      const dyMouse = gy - mouse.y;
+      const distMouseSq = dxMouse * dxMouse + dyMouse * dyMouse;
+      if (distMouseSq < mouseRadiusSq && distMouseSq > 1) {
+        const distMouse = Math.sqrt(distMouseSq);
+        const pull = (1 - distMouse / mouseRadius) * mousePullScale;
+        wx += (dxMouse / distMouse) * pull;
+        wy += (dyMouse / distMouse) * pull;
+      }
+
+      return { x: wx, y: wy };
+    }
+
+    function drawCommandHUD(now) {
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const time = now * 0.001;
+
+      if (gridCacheDirty) rebuildStaticGridCache();
+      ctx.globalCompositeOperation = 'source-over';
+
+      const mouseRecentlyMoved = (Date.now() - lastMouseMove) < 400;
+      const needsDynamicWarp = audioState.bass > 0.05 || isSingularity || mouseRecentlyMoved;
+
+      if (!needsDynamicWarp) {
+        ctx.drawImage(gridCanvas, 0, 0);
+      } else {
+        ctx.fillStyle = CONFIG.bgColor;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const gridAlpha = 0.04 + audioState.bass * 0.12;
+        ctx.strokeStyle = `rgba(${primaryRgb}, ${gridAlpha})`;
+        ctx.lineWidth = 1;
+        const step = 55;
+        const phase = now * 0.01;
+        const mouseRadius = isSingularity ? 260 : 140;
+        const mouseRadiusSq = mouseRadius * mouseRadius;
+        const mousePullScale = isSingularity ? -35 : 15;
+
+        ctx.beginPath();
+        for (let x = 0; x <= canvas.width; x += step) {
+          for (let y = 0; y <= canvas.height; y += step) {
+            const p = getWarpedGridPointFast(x, y, cx, cy, phase, mouseRadius, mouseRadiusSq, mousePullScale);
+            if (y === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+        }
+        for (let y = 0; y <= canvas.height; y += step) {
+          for (let x = 0; x <= canvas.width; x += step) {
+            const p = getWarpedGridPointFast(x, y, cx, cy, phase, mouseRadius, mouseRadiusSq, mousePullScale);
+            if (x === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+        }
+        ctx.stroke();
+      }
+
+      if (!CONFIG.showHud) return;
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+
+      const baseRadius = 115 + audioState.bass * 28 - audioState.buildUpCharge * 25;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(time * 0.25 * audioState.timeScale);
+      ctx.setLineDash([8, 14, 24, 14]);
+      ctx.strokeStyle = `rgba(${primaryRgb}, 0.3)`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, baseRadius + 18, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(-time * 0.45 * audioState.timeScale);
+      ctx.setLineDash([4, 8]);
+      ctx.strokeStyle = `rgba(${secondaryRgb}, 0.35)`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, baseRadius - 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      const mode = RESONANCE_MODES[resonanceIndex];
+      const laserThreshold = mode === 'SYNTH_RAILGUN' ? 0.45 : 0.72;
+
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = `rgba(${primaryRgb}, 0.55)`;
+      ctx.beginPath();
+      for (let i = 0; i < 64; i += 2) {
+        const binVal = audioState.bins[i];
+        const barHeight = binVal * 92 + 4;
+        const c = COS_LUT[i], s = SIN_LUT[i];
+        ctx.moveTo(cx + c * baseRadius, cy + s * baseRadius);
+        ctx.lineTo(cx + c * (baseRadius + barHeight), cy + s * (baseRadius + barHeight));
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(${secondaryRgb}, 0.55)`;
+      ctx.beginPath();
+      for (let i = 1; i < 64; i += 2) {
+        const binVal = audioState.bins[i];
+        const barHeight = binVal * 92 + 4;
+        const c = COS_LUT[i], s = SIN_LUT[i];
+        ctx.moveTo(cx + c * baseRadius, cy + s * baseRadius);
+        ctx.lineTo(cx + c * (baseRadius + barHeight), cy + s * (baseRadius + barHeight));
+      }
+      ctx.stroke();
+
+      // Lasers & Tesla Conductor Checks
+      if ((CONFIG.enableLasers && fighters.length > 0) || isTeslaConductor) {
+        for (let i = 0; i < 64; i++) {
+          const binVal = audioState.bins[i];
+          if (binVal < 0.25) continue;
+          const barHeight = binVal * 92 + 4;
+          const x2 = cx + COS_LUT[i] * (baseRadius + barHeight);
+          const y2 = cy + SIN_LUT[i] * (baseRadius + barHeight);
+
+          if (CONFIG.enableLasers && binVal > laserThreshold && Math.random() < 0.18 && fighters.length > 0) {
+            const target = fighters[(Math.random() * fighters.length) | 0];
+            if (target && target.hp > 0) {
+              harmonicLasers.push({
+                x1: x2, y1: y2,
+                x2: target.x, y2: target.y,
+                color: (i & 1) === 0 ? CONFIG.factionZeroColor : CONFIG.combatColor,
+                alpha: 0.95
+              });
+              target.hp -= 18;
+              sparks.push(new Spark(target.x, target.y, CONFIG.combatColor));
+            }
+          }
+
+          if (isTeslaConductor && (i & 3) === 0 && Math.random() < 0.35) {
+            drawLightning(x2, y2, mouse.x, mouse.y, CONFIG.factionZeroColor);
+          }
+        }
+      }
+
+      // Central Core Readout
+      const dateObj = new Date();
+      const hh = String(dateObj.getHours()).padStart(2, '0');
+      const mm = String(dateObj.getMinutes()).padStart(2, '0');
+      const ss = String(dateObj.getSeconds()).padStart(2, '0');
+      const ms = String((dateObj.getMilliseconds() / 10) | 0).padStart(2, '0');
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = `rgba(${primaryRgb}, 0.75)`;
+      ctx.fillText(CONFIG.hudTitle, cx, cy - 38);
+
+      ctx.font = 'bold 28px "Courier New", monospace';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`${hh}:${mm}:${ss}`, cx, cy - 10);
+
+      const dbLevel = Math.round((audioState.bass * 0.5 + audioState.mid * 0.5) * 100);
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = CONFIG.factionOneColor;
+      ctx.fillText(`.${ms}MS | ${audioState.bpmEstimate} BPM | ${dbLevel}dB`, cx, cy + 14);
+
+      let zeros = 0, ones = 0;
+      for (let i = 0; i < fighters.length; i++) {
+        if (fighters[i].faction === 0) zeros++;
+        else ones++;
+      }
+      const total = Math.max(1, zeros + ones);
+      const zeroRatio = zeros / total;
+      const barW = 114, barH = 4;
+      const barX = cx - barW / 2, barY = cy + 32;
+
+      ctx.fillStyle = CONFIG.factionZeroColor;
+      ctx.fillRect(barX, barY, barW * zeroRatio, barH);
+      ctx.fillStyle = CONFIG.factionOneColor;
+      ctx.fillRect(barX + barW * zeroRatio, barY, barW * (1 - zeroRatio), barH);
+
+      ctx.font = 'bold 9px "Courier New", monospace';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.fillText(`MODE: ${mode}`, cx, cy + 48);
+
+      const pwrTag = telemetry.batteryCharging ? '[AC_MAX]' : '[BAT_60+FPS]';
+      drawCornerPanel(30, 30, 'TOP_LEFT', [
+        `FPS_LOCK : ${telemetry.fps} (${telemetry.frameTime.toFixed(1)}ms)`,
+        `CPU_LOAD : ${telemetry.cpuLoad}% | MEM: ${telemetry.ramUsage}%`,
+        `TIME_DIL : ${(audioState.timeScale * 100).toFixed(0)}% [${mode}]`,
+        `PWR_CELL : ${telemetry.batteryLevel} ${pwrTag}`
+      ]);
+
+      drawCornerPanel(canvas.width - 250, 30, 'TOP_RIGHT', [
+        `ACTIVE_NODES : ${fighters.length} / ${CONFIG.maxFighters}`,
+        `CONFIRMED_KIA: ${telemetry.totalKills}`,
+        `HEX_BOSSES   : ${telemetry.hexPromotions}`,
+        `AUDIO_DROP   : ${Math.round(audioState.buildUpCharge * 100)}% CHARGE`
+      ]);
+
+      ctx.restore();
+    }
+
+    function drawCornerPanel(x, y, align, lines) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(${primaryRgb}, 0.45)`;
+      ctx.lineWidth = 1.5;
+
+      ctx.beginPath();
+      if (align === 'TOP_LEFT') {
+        ctx.moveTo(x, y + 78);
+        ctx.lineTo(x, y);
+        ctx.lineTo(x + 195, y);
+      } else {
+        ctx.moveTo(x + 25, y);
+        ctx.lineTo(x + 220, y);
+        ctx.lineTo(x + 220, y + 78);
+      }
+      ctx.stroke();
+
+      ctx.font = 'bold 11px "Courier New", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = `rgba(${primaryRgb}, 0.85)`;
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], x + 12, y + 18 + i * 16);
+      }
+      ctx.restore();
+    }
+
+    // INTERACTION, LASERS & COMBAT ENGINE
+    window.addEventListener('mousedown', (e) => {
+      if (CONFIG.sleepMode) return;
+      if (e.button === 2) {
+        isTeslaConductor = true;
+        triggerHudToast('TESLA CONDUCTOR ACTIVE');
+      } else {
+        isSingularity = true;
+      }
+    });
+
+    window.addEventListener('mouseup', (e) => {
+      if (CONFIG.sleepMode) return;
+      if (e.button === 2) {
+        isTeslaConductor = false;
+      } else if (isSingularity) {
+        isSingularity = false;
+        shockwaves.push(new Shockwave(mouse.x, mouse.y, 160, CONFIG.factionZeroColor));
+        for (let i = 0; i < fighters.length; i++) {
+          const f = fighters[i];
+          const dx = f.x - mouse.x;
+          const dy = f.y - mouse.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < 144400 && distSq > 1) {
+            const dist = Math.sqrt(distSq);
+            const force = (380 - dist) / 15;
+            f.vx += (dx / dist) * force;
+            f.vy += (dy / dist) * force;
+          }
+        }
+      }
+    });
+
+    window.addEventListener('wheel', (e) => {
+      if (CONFIG.sleepMode) return;
+      resonanceIndex = (resonanceIndex + (e.deltaY > 0 ? 1 : RESONANCE_MODES.length - 1)) % RESONANCE_MODES.length;
+      triggerHudToast(`RESONANCE -> ${RESONANCE_MODES[resonanceIndex]}`);
+    }, { passive: true });
+
+    function drawLightning(x1, y1, x2, y2, color) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      const jitter = 14 + audioState.treble * 28;
+      for (let i = 1; i < 4; i++) {
+        const t = i * 0.25;
+        ctx.lineTo(
+          x1 + (x2 - x1) * t + (Math.random() - 0.5) * jitter,
+          y1 + (y2 - y1) * t + (Math.random() - 0.5) * jitter
+        );
+      }
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.2 + audioState.treble * 1.5;
+      ctx.stroke();
+    }
+
+    function updateAndDrawLasers() {
+      for (let i = harmonicLasers.length - 1; i >= 0; i--) {
+        const l = harmonicLasers[i];
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, l.alpha);
+        ctx.strokeStyle = l.color;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(l.x1, l.y1);
+        ctx.lineTo(l.x2, l.y2);
+        ctx.stroke();
+        ctx.restore();
+        l.alpha -= 0.08 * telemetry.dtScalar;
+        if (l.alpha <= 0) removeFast(harmonicLasers, i);
+      }
+    }
+
+    class Shockwave {
+      constructor(x, y, maxRadius, color) {
+        this.x = x;
+        this.y = y;
+        this.radius = 10;
+        this.maxRadius = maxRadius;
+        this.color = color;
+        this.alpha = 0.9;
+      }
+      update() {
+        this.radius += (this.maxRadius - this.radius) * 0.16 * telemetry.dtScalar;
+        this.alpha -= 0.04 * telemetry.dtScalar;
+      }
+      draw() {
+        if (this.alpha <= 0) return;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, this.alpha);
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    class Spark {
+      constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 6 + 2 + audioState.bass * 5;
+        this.vx = Math.cos(angle) * speed;
+        this.vy = Math.sin(angle) * speed;
+        this.life = 1;
+        this.decay = Math.random() * 0.04 + 0.03;
+        this.color = color;
+      }
+      update() {
+        const step = audioState.timeScale * telemetry.dtScalar;
+        this.x += this.vx * step;
+        this.y += this.vy * step;
+        this.vx *= 0.92;
+        this.vy *= 0.92;
+        this.life -= this.decay * telemetry.dtScalar;
+      }
+      draw() {
+        if (this.life <= 0) return;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, this.life);
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(this.x - this.vx * 2, this.y - this.vy * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    class CyberFighter {
+      constructor(x, y, vx, vy, forcedFaction = null) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx + (Math.random() - 0.5) * 3;
+        this.vy = vy + (Math.random() - 0.5) * 3;
+        this.histX = new Float32Array(6);
+        this.histY = new Float32Array(6);
+        this.histCount = 0;
+        this.histHead = 0;
+
+        this.faction = forcedFaction !== null ? forcedFaction : (Math.random() > 0.5 ? 1 : 0);
+        this.char = this.faction === 1 ? '1' : '0';
+        this.color = this.faction === 1 ? CONFIG.factionOneColor : CONFIG.factionZeroColor;
+        this.hp = 100;
+        this.kills = 0;
+        this.size = 14;
+        this.angle = Math.random() * Math.PI * 2;
+      }
+
+      update(all, selfIndex) {
+        this.histX[this.histHead] = this.x;
+        this.histY[this.histHead] = this.y;
+        this.histHead = (this.histHead + 1) % 6;
+        if (this.histCount < 6) this.histCount++;
+
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const dxCore = this.x - cx;
+        const dyCore = this.y - cy;
+        const distCoreSq = dxCore * dxCore + dyCore * dyCore;
+
+        if (audioState.buildUpCharge > 0.2) {
+          const distFromCore = Math.sqrt(distCoreSq) || 1;
+          const radialForce = (155 - distFromCore) * 0.015;
+          this.vx += (dxCore / distFromCore) * radialForce - (dyCore / distFromCore) * 0.35;
+          this.vy += (dyCore / distFromCore) * radialForce + (dxCore / distFromCore) * 0.35;
+        } else if (CONFIG.showHud && !isSingularity && distCoreSq < 10000) {
+          const distFromCore = Math.sqrt(distCoreSq) || 1;
+          this.vx += (dxCore / distFromCore) * 0.9;
+          this.vy += (dyCore / distFromCore) * 0.9;
+        }
+
+        if (isSingularity) {
+          const dx = mouse.x - this.x;
+          const dy = mouse.y - this.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < 176400 && distSq > 1) {
+            const dist = Math.sqrt(distSq);
+            this.vx += (dx / dist) * 1.2 - (dy / dist) * 0.8;
+            this.vy += (dy / dist) * 1.2 + (dx / dist) * 0.8;
+          }
+        }
+
+        const speedBoost = (1 + audioState.mid * 0.45) * audioState.timeScale * telemetry.dtScalar;
+        this.x += this.vx * speedBoost;
+        this.y += this.vy * speedBoost;
+        this.vx *= 0.95;
+        this.vy *= 0.95;
+        this.hp -= 0.26 * audioState.timeScale * telemetry.dtScalar;
+        this.angle += (0.08 + audioState.treble * 0.25) * speedBoost;
+
+        let inCombat = false;
+
+        for (let i = 0; i < all.length; i++) {
+          if (i === selfIndex) continue;
+          const other = all[i];
+          if (other.hp <= 0) continue;
+
+          const dx = other.x - this.x;
+          if (dx > 95 || dx < -95) continue;
+          const dy = other.y - this.y;
+          if (dy > 95 || dy < -95) continue;
+
+          const distSq = dx * dx + dy * dy;
+          if (distSq < 9025 && distSq > 0.01) {
+            const dist = Math.sqrt(distSq);
+            if (this.faction !== other.faction) {
+              inCombat = true;
+              this.vx += (dx / dist) * 0.28 - (dy / dist) * 0.4;
+              this.vy += (dy / dist) * 0.28 + (dx / dist) * 0.4;
+
+              if (i > selfIndex && Math.random() < 0.25 + audioState.treble * 0.5) {
+                drawLightning(this.x, this.y, other.x, other.y, CONFIG.combatColor);
+              }
+
+              if (dist < 28) {
+                other.hp -= (3.5 + this.kills * 1.5 + audioState.bass * 4) * telemetry.dtScalar;
+                this.vx -= (dx / dist) * 1.8;
+                this.vy -= (dy / dist) * 1.8;
+
+                if (other.hp <= 0) {
+                  telemetry.totalKills++;
+                  if (this.kills === 0) telemetry.hexPromotions++;
+                  this.kills++;
+                  this.hp = Math.min(140, this.hp + 45);
+                  this.size = Math.min(24, this.size + 3);
+                  const hex = ['0xA', '0xF', '0xE', '0x9'];
+                  this.char = hex[this.kills & 3];
+                  this.color = CONFIG.combatColor;
+
+                  shockwaves.push(new Shockwave(other.x, other.y, 45, other.color));
+                  for (let s = 0; s < 8; s++) {
+                    sparks.push(new Spark(other.x, other.y, other.color));
+                  }
+                }
+              }
+            } else if (i > selfIndex && dist < 60) {
+              ctx.beginPath();
+              ctx.moveTo(this.x, this.y);
+              ctx.lineTo(other.x, other.y);
+              ctx.strokeStyle = `rgba(${secondaryRgb}, ${(1 - dist / 60) * 0.2})`;
+              ctx.lineWidth = 0.8;
+              ctx.stroke();
+            }
+          }
+        }
+        this.draw(inCombat);
+      }
+
+      draw(inCombat) {
+        const alpha = Math.max(0, Math.min(1, this.hp * 0.01));
+        ctx.save();
+
+        if (this.histCount > 2) {
+          ctx.beginPath();
+          const startIdx = this.histCount < 6 ? 0 : this.histHead;
+          ctx.moveTo(this.histX[startIdx], this.histY[startIdx]);
+          for (let i = 1; i < this.histCount; i++) {
+            const idx = (startIdx + i) % 6;
+            ctx.lineTo(this.histX[idx], this.histY[idx]);
+          }
+          ctx.strokeStyle = this.color;
+          ctx.globalAlpha = alpha * 0.35;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        const dynamicSize = this.size + audioState.mid * 8;
+
+        if (this.kills > 0) {
+          ctx.globalAlpha = alpha * 0.6;
+          ctx.strokeStyle = CONFIG.factionZeroColor;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, dynamicSize * 0.85, this.angle, this.angle + Math.PI * 1.3);
+          ctx.stroke();
+        }
+
+        const fontSize = dynamicSize | 0;
+        ctx.font = `bold ${fontSize}px "Courier New", Courier, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.globalAlpha = alpha;
+
+        if (inCombat || audioState.bass > 0.55) {
+          const offset = 2.5 + audioState.bass * 3;
+          ctx.fillStyle = CONFIG.combatColor;
+          ctx.fillText(this.char, this.x - offset, this.y);
+          ctx.fillStyle = CONFIG.factionZeroColor;
+          ctx.fillText(this.char, this.x + offset, this.y);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(this.char, this.x, this.y);
+        } else {
+          ctx.fillStyle = this.color;
+          ctx.fillText(this.char, this.x, this.y);
+        }
+        ctx.restore();
+      }
+    }
+
+    window.addEventListener('mousemove', (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+      if (CONFIG.sleepMode) return;
+
+      lastMouseMove = Date.now();
+      mouse.vx = (e.clientX - prevMouse.x) * 0.15;
+      mouse.vy = (e.clientY - prevMouse.y) * 0.15;
+
+      const dx = mouse.x - prevMouse.x;
+      const dy = mouse.y - prevMouse.y;
+      if (dx * dx + dy * dy > 256) {
+        fighters.push(new CyberFighter(mouse.x, mouse.y, mouse.vx, mouse.vy));
+        if (fighters.length > CONFIG.maxFighters) removeFast(fighters, 0);
+        prevMouse.x = mouse.x;
+        prevMouse.y = mouse.y;
+      }
+    }, { passive: true });
+
+    // TACTICAL KEYBOARD HOTKEY CONTROLLER
+    const THEME_NAMES = {
+      0: 'CUSTOM PALETTE',
+      1: 'KALI STEALTH BLUE',
+      2: 'MATRIX PHOSPHOR GREEN',
+      3: 'RED TEAM BREACH ALERT',
+      4: 'AMBER CRT PHOSPHOR',
+      5: 'GHOST COVERT OPS'
+    };
+
+    const hudNotification = { text: '', alpha: 0 };
+
+    function triggerHudToast(message) {
+      hudNotification.text = `[CMD_EXEC] // ${message}`;
+      hudNotification.alpha = 1.0;
+    }
+
+    function drawHudToast() {
+      if (hudNotification.alpha <= 0) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.max(0, hudNotification.alpha);
+      ctx.font = 'bold 12px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = CONFIG.combatColor;
+      ctx.fillText(hudNotification.text, canvas.width / 2, canvas.height / 2 + 86);
+      ctx.restore();
+      hudNotification.alpha -= 0.015 * telemetry.dtScalar;
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.repeat || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+      const key = e.key.toLowerCase();
+
+      if (key === 's' || key === 'p') {
+        setSleepMode(!CONFIG.sleepMode);
+        return;
+      }
+
+      if (CONFIG.sleepMode) return;
+
+      if (['0', '1', '2', '3', '4', '5'].includes(key)) {
+        const presetIndex = Number(key);
+        CONFIG.themePreset = presetIndex;
+        syncActivePalette();
+        triggerHudToast(`THEME -> ${THEME_NAMES[presetIndex]}`);
+        return;
+      }
+
+      switch (key) {
+        case ' ':
+          e.preventDefault();
+          triggerBassDetonation(1.2);
+          shockwaves.push(new Shockwave(canvas.width / 2, canvas.height / 2, 340, CONFIG.factionZeroColor));
+          triggerHudToast('MANUAL EMP DETONATION');
+          break;
+        case 'h':
+          CONFIG.showHud = !CONFIG.showHud;
+          triggerHudToast(`TACTICAL HUD: ${CONFIG.showHud ? 'ONLINE' : 'OFFLINE'}`);
+          break;
+        case 'i':
+          CONFIG.idleSpawn = !CONFIG.idleSpawn;
+          triggerHudToast(`AI SKIRMISH: ${CONFIG.idleSpawn ? 'ENABLED' : 'PAUSED'}`);
+          break;
+        case 'c':
+          fighters.length = 0;
+          sparks.length = 0;
+          shockwaves.push(new Shockwave(canvas.width / 2, canvas.height / 2, 450, CONFIG.combatColor));
+          triggerHudToast('ENTITY BUFFER PURGED');
+          break;
+        case 'l':
+          CONFIG.enableLasers = !CONFIG.enableLasers;
+          if (!CONFIG.enableLasers) harmonicLasers.length = 0;
+          triggerHudToast(`RAILGUN LASERS: ${CONFIG.enableLasers ? 'ONLINE' : 'OFFLINE'}`);
+          break;
+      }
+    });
+
+    let frameCount = 0;
+    function spawnIdleSkirmish() {
+      if (!CONFIG.idleSpawn) return;
+      const idleCap = (CONFIG.maxFighters * 0.6) | 0;
+      if (Date.now() - lastMouseMove > 1500 && frameCount % 25 === 0 && fighters.length < idleCap) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = Math.random() * 250 + 160;
+        const cx = canvas.width / 2 + Math.cos(angle) * radius;
+        const cy = canvas.height / 2 + Math.sin(angle) * radius;
+        fighters.push(new CyberFighter(cx - 25, cy, 2, 0, 0));
+        fighters.push(new CyberFighter(cx + 25, cy, -2, 0, 1));
+      }
+    }
+
+    function animate(now) {
+      if (CONFIG.sleepMode) {
+        rafId = null;
+        return;
+      }
+      rafId = requestAnimationFrame(animate);
+
+      const timestamp = now || performance.now();
+      frameCount++;
+      updateTelemetry(timestamp);
+      processAudioFrame(timestamp);
+
+      ctx.save();
+      if (audioState.screenShake > 0.5) {
+        const sx = (Math.random() - 0.5) * audioState.screenShake;
+        const sy = (Math.random() - 0.5) * audioState.screenShake;
+        ctx.translate(sx, sy);
+      }
+
+      drawCommandHUD(timestamp);
+      drawHudToast();
+      spawnIdleSkirmish();
+
+      ctx.globalCompositeOperation = 'lighter';
+      updateAndDrawLasers();
+
+      if (isSingularity) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(mouse.x, mouse.y, 28 + Math.sin(timestamp * 0.02) * 6, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${combatRgb}, 0.75)`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      for (let i = shockwaves.length - 1; i >= 0; i--) {
+        shockwaves[i].update();
+        shockwaves[i].draw();
+        if (shockwaves[i].alpha <= 0) removeFast(shockwaves, i);
+      }
+
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        sparks[i].update();
+        sparks[i].draw();
+        if (sparks[i].life <= 0) removeFast(sparks, i);
+      }
+
+      for (let i = fighters.length - 1; i >= 0; i--) {
+        fighters[i].update(fighters, i);
+        if (fighters[i].hp <= 0) removeFast(fighters, i);
+      }
+
+      ctx.restore();
+    }
+
+    rafId = requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

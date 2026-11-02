@@ -1,0 +1,76 @@
+{
+  "themePreset": {
+    "type": "dropdown",
+    "value": 1,
+    "text": "Tactical Color Matrix",
+    "items": [
+      "0 // Custom (Use Color Pickers Below)",
+      "1 // Kali Stealth Blue",
+      "2 // Matrix Phosphor Green",
+      "3 // Red Team Breach Alert",
+      "4 // Amber CRT Phosphor",
+      "5 // Ghost Covert Ops"
+    ]
+  },
+  "hudTitle": {
+    "type": "textbox",
+    "value": "SYS.CORE // OVERWATCH",
+    "text": "HUD Core Header"
+  },
+  "factionZeroColor": {
+    "type": "color",
+    "value": "#00f3ff",
+    "text": "[Custom] Faction 0 & HUD Primary"
+  },
+  "factionOneColor": {
+    "type": "color",
+    "value": "#00ff66",
+    "text": "[Custom] Faction 1 & HUD Secondary"
+  },
+  "combatColor": {
+    "type": "color",
+    "value": "#ff0055",
+    "text": "[Custom] Combat Lightning & Hex Bosses"
+  },
+  "bgColor": {
+    "type": "color",
+    "value": "#030608",
+    "text": "[Custom] Background Void Color"
+  },
+  "maxFighters": {
+    "type": "slider",
+    "min": 30,
+    "max": 250,
+    "step": 10,
+    "value": 110,
+    "text": "Max Particle Cap (CPU Load)"
+  },
+  "audioSensitivity": {
+    "type": "slider",
+    "min": 0.2,
+    "max": 3.0,
+    "step": 0.1,
+    "value": 1.0,
+    "text": "Audio Gain & Bass Sensitivity"
+  },
+  "showHud": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Render Tactical HUD & Telemetry"
+  },
+  "idleSpawn": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Autonomous AI Skirmishes When Idle"
+  },
+  "enableLasers": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Enable Harmonic Railgun Lasers"
+  },
+  "sleepMode": {
+    "type": "checkbox",
+    "value": false,
+    "text": "Work Sleep Mode (0% CPU Standby)"
+  }
+}
